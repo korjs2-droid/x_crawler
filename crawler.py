@@ -7,6 +7,7 @@ import re
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
+from urllib.parse import quote_plus
 
 from dotenv import load_dotenv
 from selenium import webdriver
@@ -179,9 +180,10 @@ class XSeleniumCrawler:
             time.sleep(1.0)
 
         if search_input is None:
-            raise RuntimeError(
-                "X 검색창을 찾지 못했습니다(3회 재시도 실패). 로그인 상태 또는 페이지 접근 제한을 확인하세요."
-            )
+            # Render/headless 환경에서 검색 입력창이 차단되는 경우 URL 진입으로 폴백한다.
+            fallback_url = f"https://x.com/search?q={quote_plus(query)}&src=typed_query&f=live"
+            print("[search] 검색창 탐색 실패 -> URL 검색 폴백 사용")
+            return fallback_url
 
         search_input.clear()
         search_input.send_keys(query)
