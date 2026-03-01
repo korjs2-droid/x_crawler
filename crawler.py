@@ -82,13 +82,13 @@ class XSeleniumCrawler:
         driver.set_page_load_timeout(self.page_load_timeout_sec)
         return driver
 
-    def _safe_get(self, url: str) -> None:
+    def _safe_get(self, url: str) -> bool:
         last_error = None
         for attempt in range(1, self.page_open_retries + 1):
             try:
                 self._emit_progress(f"페이지 열기 시도 {attempt}/{self.page_open_retries}: {url}")
                 self.driver.get(url)
-                return
+                return True
             except TimeoutException as exc:
                 last_error = exc
                 self._emit_progress(
@@ -98,7 +98,8 @@ class XSeleniumCrawler:
                 self.driver.execute_script("window.stop();")
                 if attempt < self.page_open_retries:
                     time.sleep(0.8)
-        raise RuntimeError(f"페이지 열기 실패: {url} ({last_error})")
+        self._emit_progress(f"페이지 열기 실패(계속 진행): {url} ({last_error})")
+        return False
 
     def close(self) -> None:
         self.driver.quit()
@@ -110,7 +111,9 @@ class XSeleniumCrawler:
         manual_wait_sec: int = 90,
     ) -> None:
         self._emit_progress("로그인 페이지로 이동")
-        self._safe_get("https://x.com/i/flow/login")
+        loaded = self._safe_get("https://x.com/i/flow/login")
+        if not loaded:
+            raise RuntimeError("로그인 페이지 로딩 실패")
 
         user_input = self._find_first(
             [
