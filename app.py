@@ -70,13 +70,22 @@ def run_job(form: Dict[str, str], progress_cb=None) -> Dict[str, Any]:
     username = (form.get("x_username") or os.getenv("X_USERNAME") or "").strip()
     password = (form.get("x_password") or os.getenv("X_PASSWORD") or "").strip()
 
-    crawler = XSeleniumCrawler(
-        headless=True,
-        scroll_pause_sec=scroll_pause,
-        profile_dir=(form.get("profile_dir") or None),
-        profile_name=(form.get("profile_name") or None),
-        progress_cb=progress_cb,
-    )
+    crawler_kwargs = {
+        "headless": True,
+        "scroll_pause_sec": scroll_pause,
+        "profile_dir": (form.get("profile_dir") or None),
+        "profile_name": (form.get("profile_name") or None),
+    }
+    try:
+        crawler = XSeleniumCrawler(
+            **crawler_kwargs,
+            progress_cb=progress_cb,
+        )
+    except TypeError as exc:
+        # 구버전 crawler.py(진행 콜백 미지원)와도 호환되게 동작한다.
+        if "progress_cb" not in str(exc):
+            raise
+        crawler = XSeleniumCrawler(**crawler_kwargs)
 
     try:
         if login:
