@@ -6,7 +6,7 @@ import random
 import re
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 from urllib.parse import quote_plus
 
 from dotenv import load_dotenv
@@ -35,6 +35,7 @@ class XSeleniumCrawler:
         break_max_sec: float = 16.0,
         profile_dir: Optional[str] = None,
         profile_name: Optional[str] = None,
+        progress_cb: Optional[Callable[[str], None]] = None,
     ):
         self.page_wait_sec = page_wait_sec
         self.scroll_pause_sec = scroll_pause_sec
@@ -44,7 +45,12 @@ class XSeleniumCrawler:
         self.break_every_scrolls = break_every_scrolls
         self.break_min_sec = break_min_sec
         self.break_max_sec = break_max_sec
+        self.progress_cb = progress_cb
         self.driver = self._build_driver(headless, profile_dir, profile_name)
+
+    def _emit_progress(self, message: str) -> None:
+        if self.progress_cb:
+            self.progress_cb(message)
 
     def _build_driver(
         self,
@@ -80,6 +86,7 @@ class XSeleniumCrawler:
         password: str,
         manual_wait_sec: int = 90,
     ) -> None:
+        self._emit_progress("로그인 페이지로 이동")
         self.driver.get("https://x.com/i/flow/login")
 
         user_input = self._find_first(
@@ -95,6 +102,7 @@ class XSeleniumCrawler:
         user_input.clear()
         user_input.send_keys(username)
         user_input.send_keys(Keys.ENTER)
+        self._emit_progress("아이디 입력 완료")
         time.sleep(1.2)
 
         # 추가 식별(전화번호/username 재확인)이 필요한 계정이 있다.
@@ -124,17 +132,21 @@ class XSeleniumCrawler:
         pass_input.clear()
         pass_input.send_keys(password)
         pass_input.send_keys(Keys.ENTER)
+        self._emit_progress("비밀번호 제출 완료")
 
         if self._is_logged_in(timeout=12):
+            self._emit_progress("로그인 성공")
             return
 
         if manual_wait_sec > 0:
             print(
                 f"[login] 추가 인증(2FA/캡차) 처리 대기 중... 최대 {manual_wait_sec}초",
             )
+            self._emit_progress(f"추가 인증 대기 중 (최대 {manual_wait_sec}초)")
             deadline = time.time() + manual_wait_sec
             while time.time() < deadline:
                 if self._is_logged_in(timeout=2):
+                    self._emit_progress("추가 인증 후 로그인 성공")
                     return
                 time.sleep(1)
 
@@ -146,6 +158,7 @@ class XSeleniumCrawler:
         limit: int,
         max_scrolls: int,
     ) -> Dict[str, Any]:
+        self._emit_progress(f"search 모드 시작: query='{query}'")
         url = self._open_search_with_input(query)
         tweets = self._crawl_timeline(url=url, limit=limit, max_scrolls=max_scrolls)
         return {
@@ -165,6 +178,7 @@ class XSeleniumCrawler:
             "https://x.com/explore",
         ]
         for idx, target_url in enumerate(attempts, start=1):
+            self._emit_progress(f"검색창 탐색 시도 {idx}/{len(attempts)}")
             self.driver.get(target_url)
             search_input = self._find_first(
                 [
@@ -183,11 +197,13 @@ class XSeleniumCrawler:
             # Render/headless 환경에서 검색 입력창이 차단되는 경우 URL 진입으로 폴백한다.
             fallback_url = f"https://x.com/search?q={quote_plus(query)}&src=typed_query&f=live"
             print("[search] 검색창 탐색 실패 -> URL 검색 폴백 사용")
+            self._emit_progress("검색창 탐색 실패, URL 검색 폴백으로 전환")
             return fallback_url
 
         search_input.clear()
         search_input.send_keys(query)
         search_input.send_keys(Keys.ENTER)
+        self._emit_progress("검색어 입력 후 결과 페이지 이동")
 
         # 탭 UI가 보이면 최신(Latest)으로 전환 시도
         latest_tab = self._find_first(
@@ -202,6 +218,7 @@ class XSeleniumCrawler:
             try:
                 latest_tab.click()
                 time.sleep(0.6)
+                self._emit_progress("Latest(최신) 탭 전환")
             except Exception:
                 pass
 
@@ -213,6 +230,7 @@ class XSeleniumCrawler:
         limit: int,
         max_scrolls: int,
     ) -> Dict[str, Any]:
+        self._emit_progress(f"user 모드 시작: @{username}")
         url = f"https://x.com/{username}"
         tweets = self._crawl_timeline(url=url, limit=limit, max_scrolls=max_scrolls)
         return {
@@ -229,6 +247,7 @@ class XSeleniumCrawler:
         limit: int,
         max_scrolls: int,
     ) -> List[Dict[str, Any]]:
+        self._emit_progress(f"타임라인 수집 시작: limit={limit}, max_scrolls={max_scrolls}")
         self.driver.get(url)
         self._wait_for_page()
 
@@ -244,8 +263,16 @@ class XSeleniumCrawler:
             if self._is_access_challenge():
                 raise RuntimeError("접근 제한/인증 페이지가 감지되어 수집을 중단했습니다.")
 
-            for article in self.driver.find_elements(By.CSS_SELECTOR, "article[data-testid='tweet']"):
-                tweet = self._extract_tweet(article)
+            candidates = self.driver.find_elements(By.CSS_SELECTOR, "article[data-testid='tweet']")
+            if not candidates:
+                candidates = self.driver.find_elements(By.CSS_SELECTOR, "div[data-testid='cellInnerDiv']")
+
+            self._emit_progress(
+                f"DOM 후보 수: {len(candidates)} (scroll={scroll_idx + 1})"
+            )
+
+            for container in candidates:
+                tweet = self._extract_tweet(container)
                 if not tweet:
                     continue
                 tweet_id = tweet.get("tweet_id")
@@ -260,10 +287,14 @@ class XSeleniumCrawler:
 
             self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
             self._sleep_between_scrolls()
+            self._emit_progress(
+                f"진행중: scroll={scroll_idx + 1}/{max_scrolls}, collected={len(collected)}/{limit}"
+            )
 
             if self.safe_mode and self.break_every_scrolls > 0 and (scroll_idx + 1) % self.break_every_scrolls == 0:
                 break_time = random.uniform(self.break_min_sec, self.break_max_sec)
                 print(f"[safe-mode] 장기 대기 {break_time:.1f}초")
+                self._emit_progress(f"안전 모드 휴식: {break_time:.1f}초")
                 time.sleep(break_time)
 
             current_height = self._page_height()
@@ -276,6 +307,11 @@ class XSeleniumCrawler:
             # 더 이상 로딩이 진행되지 않으면 종료
             if same_height_count >= 3:
                 break
+
+        if not collected:
+            # 최후 폴백: 현재 페이지의 status 링크를 직접 수집한다.
+            self._emit_progress("트윗 카드 0건 -> status 링크 폴백 시도")
+            collected = self._extract_from_status_links(limit)
 
         return collected[:limit]
 
@@ -388,6 +424,41 @@ class XSeleniumCrawler:
             "created_at": time_iso,
             "text": text,
         }
+
+    def _extract_from_status_links(self, limit: int) -> List[Dict[str, Any]]:
+        links = self.driver.find_elements(By.CSS_SELECTOR, "a[href*='/status/']")
+        seen: Set[str] = set()
+        rows: List[Dict[str, Any]] = []
+        for a in links:
+            href = a.get_attribute("href") or ""
+            match = TWEET_ID_RE.search(href)
+            if not match:
+                continue
+            tweet_id = match.group(1)
+            if tweet_id in seen:
+                continue
+            seen.add(tweet_id)
+
+            username = ""
+            parts = href.split("/")
+            if len(parts) >= 4:
+                username = parts[3]
+
+            rows.append(
+                {
+                    "tweet_id": tweet_id,
+                    "url": href,
+                    "username": username,
+                    "display_name": "",
+                    "created_at": "",
+                    "text": "",
+                }
+            )
+            if len(rows) >= limit:
+                break
+
+        self._emit_progress(f"status 링크 폴백 수집: {len(rows)}건")
+        return rows
 
 
 def save_json(path: str, payload: Dict[str, Any]) -> None:
