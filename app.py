@@ -4,6 +4,7 @@ import os
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from datetime import datetime, timezone
 from typing import Any, Dict
 
@@ -77,16 +78,47 @@ def run_job(form: Dict[str, str], progress_cb=None) -> Dict[str, Any]:
         "profile_dir": (form.get("profile_dir") or None),
         "profile_name": (form.get("profile_name") or None),
     }
-    try:
-        crawler = XSeleniumCrawler(
-            **crawler_kwargs,
-            progress_cb=progress_cb,
-        )
-    except TypeError as exc:
-        # 구버전 crawler.py(진행 콜백 미지원)와도 호환되게 동작한다.
-        if "progress_cb" not in str(exc):
-            raise
-        crawler = XSeleniumCrawler(**crawler_kwargs)
+    init_timeout_sec = _to_int(os.getenv("CHROME_INIT_TIMEOUT_SEC", "45"), 45)
+    init_retries = _to_int(os.getenv("CHROME_INIT_RETRIES", "2"), 2)
+    retry_wait_sec = _to_int(os.getenv("CHROME_INIT_RETRY_WAIT_SEC", "2"), 2)
+
+    def _build_crawler() -> XSeleniumCrawler:
+        try:
+            return XSeleniumCrawler(
+                **crawler_kwargs,
+                progress_cb=progress_cb,
+            )
+        except TypeError as exc:
+            # 구버전 crawler.py(진행 콜백 미지원)와도 호환되게 동작한다.
+            if "progress_cb" not in str(exc):
+                raise
+            return XSeleniumCrawler(**crawler_kwargs)
+
+    crawler = None
+    last_exc = None
+    for attempt in range(1, init_retries + 1):
+        if progress_cb:
+            progress_cb(f"Chrome 초기화 시도 {attempt}/{init_retries}")
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_build_crawler)
+                crawler = future.result(timeout=init_timeout_sec)
+            if progress_cb:
+                progress_cb("Chrome 초기화 성공")
+            break
+        except FutureTimeout:
+            last_exc = RuntimeError(f"Chrome 초기화 시간 초과 ({init_timeout_sec}s)")
+            if progress_cb:
+                progress_cb(str(last_exc))
+        except Exception as exc:
+            last_exc = exc
+            if progress_cb:
+                progress_cb(f"Chrome 초기화 실패: {exc}")
+        if attempt < init_retries:
+            time.sleep(retry_wait_sec)
+
+    if crawler is None:
+        raise RuntimeError(f"Chrome 초기화 최종 실패: {last_exc}")
 
     try:
         if login:
@@ -105,7 +137,8 @@ def run_job(form: Dict[str, str], progress_cb=None) -> Dict[str, Any]:
             raise RuntimeError("query를 입력하세요.")
         return crawler.crawl_search(query=query, limit=limit, max_scrolls=max_scrolls)
     finally:
-        crawler.close()
+        if crawler is not None:
+            crawler.close()
 
 
 def _run_job_async(job_id: str, form: Dict[str, str]) -> None:
