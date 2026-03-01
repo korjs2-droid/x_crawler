@@ -46,6 +46,8 @@ class XSeleniumCrawler:
         self.break_min_sec = break_min_sec
         self.break_max_sec = break_max_sec
         self.progress_cb = progress_cb
+        self.page_load_timeout_sec = int(os.getenv("PAGE_LOAD_TIMEOUT_SEC", "25"))
+        self.page_open_retries = int(os.getenv("PAGE_OPEN_RETRIES", "2"))
         self.driver = self._build_driver(headless, profile_dir, profile_name)
 
     def _emit_progress(self, message: str) -> None:
@@ -59,6 +61,7 @@ class XSeleniumCrawler:
         profile_name: Optional[str],
     ) -> webdriver.Chrome:
         options = Options()
+        options.page_load_strategy = "eager"
         chrome_bin = os.getenv("CHROME_BIN")
         if chrome_bin:
             options.binary_location = chrome_bin
@@ -75,7 +78,27 @@ class XSeleniumCrawler:
             options.add_argument(f"--profile-directory={profile_name}")
 
         # Selenium Manager가 적절한 ChromeDriver를 자동으로 관리한다.
-        return webdriver.Chrome(options=options)
+        driver = webdriver.Chrome(options=options)
+        driver.set_page_load_timeout(self.page_load_timeout_sec)
+        return driver
+
+    def _safe_get(self, url: str) -> None:
+        last_error = None
+        for attempt in range(1, self.page_open_retries + 1):
+            try:
+                self._emit_progress(f"페이지 열기 시도 {attempt}/{self.page_open_retries}: {url}")
+                self.driver.get(url)
+                return
+            except TimeoutException as exc:
+                last_error = exc
+                self._emit_progress(
+                    f"페이지 열기 timeout ({self.page_load_timeout_sec}s), 재시도 {attempt}/{self.page_open_retries}"
+                )
+                # 로딩이 길게 걸릴 때 중단해서 다음 단계로 진행 가능하게 한다.
+                self.driver.execute_script("window.stop();")
+                if attempt < self.page_open_retries:
+                    time.sleep(0.8)
+        raise RuntimeError(f"페이지 열기 실패: {url} ({last_error})")
 
     def close(self) -> None:
         self.driver.quit()
@@ -87,7 +110,7 @@ class XSeleniumCrawler:
         manual_wait_sec: int = 90,
     ) -> None:
         self._emit_progress("로그인 페이지로 이동")
-        self.driver.get("https://x.com/i/flow/login")
+        self._safe_get("https://x.com/i/flow/login")
 
         user_input = self._find_first(
             [
@@ -179,7 +202,7 @@ class XSeleniumCrawler:
         ]
         for idx, target_url in enumerate(attempts, start=1):
             self._emit_progress(f"검색창 탐색 시도 {idx}/{len(attempts)}")
-            self.driver.get(target_url)
+            self._safe_get(target_url)
             search_input = self._find_first(
                 [
                     (By.CSS_SELECTOR, "input[data-testid='SearchBox_Search_Input']"),
@@ -248,7 +271,7 @@ class XSeleniumCrawler:
         max_scrolls: int,
     ) -> List[Dict[str, Any]]:
         self._emit_progress(f"타임라인 수집 시작: limit={limit}, max_scrolls={max_scrolls}")
-        self.driver.get(url)
+        self._safe_get(url)
         self._wait_for_page()
 
         seen_ids: Set[str] = set()
