@@ -1,4 +1,0 @@
-selenium==4.29.0
-python-dotenv==1.0.1
-Flask==3.1.0
-gunicorn==23.0.0
