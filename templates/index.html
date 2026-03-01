@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>X Crawler</title>
+    <style>
+      :root {
+        --bg: #f7f6f2;
+        --card: #ffffff;
+        --text: #1f2937;
+        --muted: #6b7280;
+        --brand: #0f766e;
+        --line: #d1d5db;
+      }
+      body {
+        margin: 0;
+        padding: 24px;
+        font-family: "Pretendard", "Noto Sans KR", sans-serif;
+        background: radial-gradient(circle at top right, #d1fae5, var(--bg));
+        color: var(--text);
+      }
+      .wrap {
+        max-width: 860px;
+        margin: 0 auto;
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 18px;
+        margin-bottom: 16px;
+      }
+      h1 {
+        margin: 0 0 10px;
+        font-size: 26px;
+      }
+      .muted {
+        color: var(--muted);
+        font-size: 14px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+      @media (max-width: 720px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+      label {
+        font-size: 13px;
+        color: var(--muted);
+        display: block;
+        margin-bottom: 5px;
+      }
+      input,
+      select {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 10px;
+        box-sizing: border-box;
+      }
+      .row {
+        margin-bottom: 10px;
+      }
+      button {
+        border: none;
+        background: var(--brand);
+        color: white;
+        border-radius: 10px;
+        padding: 11px 14px;
+        cursor: pointer;
+      }
+      .error {
+        color: #b91c1c;
+        font-size: 14px;
+      }
+      pre {
+        white-space: pre-wrap;
+        word-break: break-word;
+        background: #0b1020;
+        color: #dbeafe;
+        border-radius: 12px;
+        padding: 12px;
+        overflow: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="card">
+        <h1>X Crawler Web</h1>
+        <div class="muted">Selenium 기반 수집 UI</div>
+        <form method="post" action="/logout" style="margin-top: 10px">
+          <button type="submit">로그아웃</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <form method="post">
+          <div class="grid">
+            <div class="row">
+              <label>모드</label>
+              <select name="mode">
+                <option value="search">search</option>
+                <option value="user">user</option>
+              </select>
+            </div>
+            <div class="row">
+              <label>limit</label>
+              <input name="limit" value="50" />
+            </div>
+            <div class="row">
+              <label>query (search 모드)</label>
+              <input name="query" placeholder="ai" />
+            </div>
+            <div class="row">
+              <label>username (user 모드)</label>
+              <input name="username" placeholder="OpenAI" />
+            </div>
+            <div class="row">
+              <label>max_scrolls</label>
+              <input name="max_scrolls" value="60" />
+            </div>
+            <div class="row">
+              <label>scroll_pause</label>
+              <input name="scroll_pause" value="1.5" />
+            </div>
+            <div class="row">
+              <label>profile_dir (선택)</label>
+              <input name="profile_dir" placeholder="/path/to/chrome/user-data" />
+            </div>
+            <div class="row">
+              <label>profile_name (선택)</label>
+              <input name="profile_name" placeholder="Default" />
+            </div>
+          </div>
+
+          <div class="row">
+            <label><input type="checkbox" name="login" /> 로그인 자동화 사용</label>
+          </div>
+          <div class="grid">
+            <div class="row">
+              <label>x_username (선택, .env 우선 사용 가능)</label>
+              <input name="x_username" />
+            </div>
+            <div class="row">
+              <label>x_password (선택, .env 우선 사용 가능)</label>
+              <input type="password" name="x_password" />
+            </div>
+          </div>
+
+          <button type="submit">크롤링 실행</button>
+        </form>
+
+        {% if error %}
+        <p class="error">오류: {{ error }}</p>
+        {% endif %}
+      </div>
+
+      {% if result %}
+      <div class="card">
+        <h3>결과: {{ result.count }}건</h3>
+        <pre>{{ result | tojson(indent=2) }}</pre>
+      </div>
+      {% endif %}
+    </div>
+  </body>
+</html>
