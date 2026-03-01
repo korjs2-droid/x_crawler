@@ -10,6 +10,7 @@ from typing import Any, Callable, Dict, List, Optional, Set
 from urllib.parse import quote_plus
 
 from dotenv import load_dotenv
+import requests
 from selenium import webdriver
 from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.chrome.options import Options
@@ -19,6 +20,128 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
 TWEET_ID_RE = re.compile(r"/status/(\d+)")
+API_BASE = "https://api.x.com/2"
+
+
+class XApiCrawler:
+    def __init__(
+        self,
+        bearer_token: str,
+        timeout_sec: int = 20,
+        progress_cb: Optional[Callable[[str], None]] = None,
+    ):
+        self.timeout_sec = timeout_sec
+        self.progress_cb = progress_cb
+        self.session = requests.Session()
+        self.session.headers.update({"Authorization": f"Bearer {bearer_token}"})
+
+    def _emit(self, msg: str) -> None:
+        if self.progress_cb:
+            self.progress_cb(msg)
+
+    def _get(self, path: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        url = f"{API_BASE}{path}"
+        resp = self.session.get(url, params=params, timeout=self.timeout_sec)
+        if not resp.ok:
+            raise RuntimeError(f"X API 오류 {resp.status_code}: {resp.text}")
+        return resp.json()
+
+    def crawl_search(self, query: str, limit: int) -> Dict[str, Any]:
+        self._emit("API search 시작")
+        collected: List[Dict[str, Any]] = []
+        users_by_id: Dict[str, Dict[str, Any]] = {}
+        next_token: Optional[str] = None
+
+        while len(collected) < limit:
+            page_size = min(100, limit - len(collected))
+            params: Dict[str, Any] = {
+                "query": query,
+                "max_results": page_size,
+                "tweet.fields": "id,text,author_id,created_at,lang,public_metrics",
+                "expansions": "author_id",
+                "user.fields": "id,username,name",
+            }
+            if next_token:
+                params["next_token"] = next_token
+            payload = self._get("/tweets/search/recent", params)
+
+            tweets = payload.get("data", [])
+            for u in payload.get("includes", {}).get("users", []):
+                users_by_id[u["id"]] = u
+            for t in tweets:
+                uid = t.get("author_id", "")
+                uname = users_by_id.get(uid, {}).get("username", "")
+                collected.append(
+                    {
+                        "tweet_id": t.get("id", ""),
+                        "url": f"https://x.com/{uname}/status/{t.get('id', '')}" if uname else "",
+                        "username": uname,
+                        "display_name": users_by_id.get(uid, {}).get("name", ""),
+                        "created_at": t.get("created_at", ""),
+                        "text": t.get("text", ""),
+                    }
+                )
+
+            next_token = payload.get("meta", {}).get("next_token")
+            self._emit(f"API search 수집: {len(collected)}/{limit}")
+            if not next_token or not tweets:
+                break
+
+        return {
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "mode": "search",
+            "query": query,
+            "count": len(collected),
+            "tweets": collected[:limit],
+        }
+
+    def crawl_user(self, username: str, limit: int) -> Dict[str, Any]:
+        self._emit(f"API user 시작: @{username}")
+        user_payload = self._get(
+            f"/users/by/username/{username}",
+            {"user.fields": "id,username,name"},
+        )
+        user = user_payload.get("data")
+        if not user:
+            raise RuntimeError(f"API에서 사용자 조회 실패: {username}")
+        user_id = user["id"]
+
+        collected: List[Dict[str, Any]] = []
+        next_token: Optional[str] = None
+        while len(collected) < limit:
+            page_size = min(100, limit - len(collected))
+            params: Dict[str, Any] = {
+                "max_results": page_size,
+                "tweet.fields": "id,text,created_at,lang,public_metrics",
+            }
+            if next_token:
+                params["pagination_token"] = next_token
+            payload = self._get(f"/users/{user_id}/tweets", params)
+            tweets = payload.get("data", [])
+            for t in tweets:
+                collected.append(
+                    {
+                        "tweet_id": t.get("id", ""),
+                        "url": f"https://x.com/{username}/status/{t.get('id', '')}",
+                        "username": username,
+                        "display_name": user.get("name", ""),
+                        "created_at": t.get("created_at", ""),
+                        "text": t.get("text", ""),
+                    }
+                )
+
+            next_token = payload.get("meta", {}).get("next_token")
+            self._emit(f"API user 수집: {len(collected)}/{limit}")
+            if not next_token or not tweets:
+                break
+
+        return {
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "mode": "user",
+            "username": username,
+            "count": len(collected),
+            "tweets": collected[:limit],
+        }
 
 
 class XSeleniumCrawler:
