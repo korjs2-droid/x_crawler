@@ -2,6 +2,7 @@
 import hmac
 import os
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict
@@ -108,6 +109,9 @@ def run_job(form: Dict[str, str], progress_cb=None) -> Dict[str, Any]:
 
 
 def _run_job_async(job_id: str, form: Dict[str, str]) -> None:
+    timeout_sec = _to_int(os.getenv("JOB_TIMEOUT_SEC", "120"), 120)
+    heartbeat_sec = _to_int(os.getenv("JOB_HEARTBEAT_SEC", "5"), 5)
+
     _set_job(
         job_id,
         status="running",
@@ -115,24 +119,74 @@ def _run_job_async(job_id: str, form: Dict[str, str]) -> None:
         finished_at=None,
         error="",
     )
-    _append_progress(job_id, "작업 시작")
-    try:
-        result = run_job(form, progress_cb=lambda msg: _append_progress(job_id, msg))
-        _set_job(
-            job_id,
-            status="completed",
-            result=result,
-            finished_at=_utc_now(),
-        )
-        _append_progress(job_id, f"작업 완료: {result.get('count', 0)}건")
-    except Exception as exc:
+    _append_progress(job_id, f"작업 시작 (timeout={timeout_sec}s)")
+
+    done = threading.Event()
+    result_holder: Dict[str, Any] = {}
+    error_holder: Dict[str, str] = {}
+
+    def _worker() -> None:
+        try:
+            result_holder["result"] = run_job(form, progress_cb=lambda msg: _append_progress(job_id, msg))
+        except Exception as exc:
+            error_holder["error"] = str(exc)
+        finally:
+            done.set()
+
+    worker = threading.Thread(target=_worker, daemon=True)
+    worker.start()
+
+    start_ts = time.monotonic()
+    next_heartbeat = start_ts + heartbeat_sec
+
+    while not done.is_set():
+        now = time.monotonic()
+        elapsed = int(now - start_ts)
+        if now >= next_heartbeat:
+            _append_progress(job_id, f"작업 진행중... {elapsed}s 경과")
+            next_heartbeat = now + heartbeat_sec
+
+        if elapsed >= timeout_sec:
+            _set_job(
+                job_id,
+                status="failed",
+                error=f"작업 시간 초과 ({timeout_sec}s)",
+                finished_at=_utc_now(),
+            )
+            _append_progress(job_id, f"작업 실패: timeout {timeout_sec}s")
+            return
+
+        done.wait(timeout=1.0)
+
+    if "error" in error_holder:
+        exc = error_holder["error"]
         _set_job(
             job_id,
             status="failed",
-            error=str(exc),
+            error=exc,
             finished_at=_utc_now(),
         )
         _append_progress(job_id, f"작업 실패: {exc}")
+        return
+
+    result = result_holder.get("result")
+    if result is None:
+        _set_job(
+            job_id,
+            status="failed",
+            error="알 수 없는 오류: 결과가 비어있습니다.",
+            finished_at=_utc_now(),
+        )
+        _append_progress(job_id, "작업 실패: 결과 없음")
+        return
+
+    _set_job(
+        job_id,
+        status="completed",
+        result=result,
+        finished_at=_utc_now(),
+    )
+    _append_progress(job_id, f"작업 완료: {result.get('count', 0)}건")
 
 
 @app.route("/", methods=["GET"])
