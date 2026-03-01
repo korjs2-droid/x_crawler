@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>X Crawler</title>
+    <style>
+      :root {
+        --bg: #f7f6f2;
+        --card: #ffffff;
+        --text: #1f2937;
+        --muted: #6b7280;
+        --brand: #0f766e;
+        --line: #d1d5db;
+      }
+      body {
+        margin: 0;
+        padding: 24px;
+        font-family: "Pretendard", "Noto Sans KR", sans-serif;
+        background: radial-gradient(circle at top right, #d1fae5, var(--bg));
+        color: var(--text);
+      }
+      .wrap {
+        max-width: 860px;
+        margin: 0 auto;
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 18px;
+        margin-bottom: 16px;
+      }
+      h1 {
+        margin: 0 0 10px;
+        font-size: 26px;
+      }
+      .muted {
+        color: var(--muted);
+        font-size: 14px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+      @media (max-width: 720px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+      label {
+        font-size: 13px;
+        color: var(--muted);
+        display: block;
+        margin-bottom: 5px;
+      }
+      input,
+      select {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 10px;
+        box-sizing: border-box;
+      }
+      .row {
+        margin-bottom: 10px;
+      }
+      button {
+        border: none;
+        background: var(--brand);
+        color: white;
+        border-radius: 10px;
+        padding: 11px 14px;
+        cursor: pointer;
+      }
+      .error {
+        color: #b91c1c;
+        font-size: 14px;
+      }
+      .ok {
+        color: #047857;
+        font-size: 14px;
+      }
+      pre {
+        white-space: pre-wrap;
+        word-break: break-word;
+        background: #0b1020;
+        color: #dbeafe;
+        border-radius: 12px;
+        padding: 12px;
+        overflow: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="card">
+        <h1>X Crawler Web</h1>
+        <div class="muted">Selenium 기반 수집 UI</div>
+        <form method="post" action="/logout" style="margin-top: 10px">
+          <button type="submit">로그아웃</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <form id="crawl-form">
+          <div class="grid">
+            <div class="row">
+              <label>모드</label>
+              <select name="mode">
+                <option value="search">search</option>
+                <option value="user">user</option>
+              </select>
+            </div>
+            <div class="row">
+              <label>limit</label>
+              <input name="limit" value="50" />
+            </div>
+            <div class="row">
+              <label>query (search 모드)</label>
+              <input name="query" placeholder="ai" />
+            </div>
+            <div class="row">
+              <label>username (user 모드)</label>
+              <input name="username" placeholder="OpenAI" />
+            </div>
+            <div class="row">
+              <label>max_scrolls</label>
+              <input name="max_scrolls" value="60" />
+            </div>
+            <div class="row">
+              <label>scroll_pause</label>
+              <input name="scroll_pause" value="1.5" />
+            </div>
+            <div class="row">
+              <label>profile_dir (선택)</label>
+              <input name="profile_dir" placeholder="/path/to/chrome/user-data" />
+            </div>
+            <div class="row">
+              <label>profile_name (선택)</label>
+              <input name="profile_name" placeholder="Default" />
+            </div>
+          </div>
+
+          <div class="row">
+            <label><input type="checkbox" name="login" /> 로그인 자동화 사용</label>
+          </div>
+          <div class="grid">
+            <div class="row">
+              <label>x_username (선택, .env 우선 사용 가능)</label>
+              <input name="x_username" />
+            </div>
+            <div class="row">
+              <label>x_password (선택, .env 우선 사용 가능)</label>
+              <input type="password" name="x_password" />
+            </div>
+          </div>
+
+          <button id="run-btn" type="submit">크롤링 실행</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <h3>진행상황</h3>
+        <p id="job-status" class="muted">대기중</p>
+        <p id="job-error" class="error" style="display: none"></p>
+        <p id="job-ok" class="ok" style="display: none"></p>
+        <pre id="job-progress">아직 실행하지 않았습니다.</pre>
+      </div>
+
+      <div class="card">
+        <h3>결과 JSON</h3>
+        <pre id="job-result">-</pre>
+      </div>
+    </div>
+    <script>
+      const form = document.getElementById("crawl-form");
+      const runBtn = document.getElementById("run-btn");
+      const statusEl = document.getElementById("job-status");
+      const progressEl = document.getElementById("job-progress");
+      const resultEl = document.getElementById("job-result");
+      const errEl = document.getElementById("job-error");
+      const okEl = document.getElementById("job-ok");
+
+      let timer = null;
+      let pollFailCount = 0;
+      const maxPollFail = 12;
+
+      async function pollStatus(jobId) {
+        const res = await fetch(`/status/${jobId}`);
+        if (!res.ok) {
+          throw new Error(`status 조회 실패: ${res.status}`);
+        }
+        pollFailCount = 0;
+        const data = await res.json();
+        const logs = (data.progress || []).join("\n");
+        progressEl.textContent = logs || "로그 없음";
+        statusEl.textContent = `상태: ${data.status || "unknown"}`;
+
+        if (data.status === "completed") {
+          resultEl.textContent = JSON.stringify(data.result || {}, null, 2);
+          okEl.style.display = "block";
+          okEl.textContent = `완료: ${data.result?.count || 0}건`;
+          errEl.style.display = "none";
+          runBtn.disabled = false;
+          clearInterval(timer);
+          timer = null;
+        } else if (data.status === "failed") {
+          errEl.style.display = "block";
+          errEl.textContent = `오류: ${data.error || "unknown error"}`;
+          okEl.style.display = "none";
+          runBtn.disabled = false;
+          clearInterval(timer);
+          timer = null;
+        }
+      }
+
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        if (timer) {
+          clearInterval(timer);
+          timer = null;
+        }
+
+        errEl.style.display = "none";
+        okEl.style.display = "none";
+        resultEl.textContent = "-";
+        progressEl.textContent = "작업 요청 중...";
+        statusEl.textContent = "상태: queued";
+        runBtn.disabled = true;
+        pollFailCount = 0;
+
+        try {
+          const body = new FormData(form);
+          const res = await fetch("/start", { method: "POST", body });
+          const data = await res.json();
+          if (!res.ok || !data.job_id) {
+            throw new Error(data.error || "작업 시작 실패");
+          }
+
+          const jobId = data.job_id;
+          await pollStatus(jobId);
+          timer = setInterval(() => pollStatus(jobId).catch((err) => {
+            pollFailCount += 1;
+            errEl.style.display = "block";
+            errEl.textContent = `경고: 상태 조회 일시 실패 (${pollFailCount}/${maxPollFail}) - ${err.message}`;
+            if (pollFailCount >= maxPollFail) {
+              runBtn.disabled = false;
+              clearInterval(timer);
+              timer = null;
+              errEl.textContent = `오류: 상태 조회가 계속 실패해 중단했습니다. 잠시 후 새로고침 후 확인하세요.`;
+            }
+          }), 2000);
+        } catch (err) {
+          errEl.style.display = "block";
+          errEl.textContent = `오류: ${err.message}`;
+          runBtn.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>
