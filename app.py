@@ -11,7 +11,7 @@ from typing import Any, Dict
 from dotenv import load_dotenv
 from flask import Flask, jsonify, redirect, render_template, request, session, url_for
 
-from crawler import XSeleniumCrawler
+from crawler import XApiCrawler, XSeleniumCrawler
 
 load_dotenv()
 
@@ -64,6 +64,7 @@ def _append_progress(job_id: str, message: str) -> None:
 
 def run_job(form: Dict[str, str], progress_cb=None) -> Dict[str, Any]:
     mode = form.get("mode", "search")
+    engine = (form.get("engine") or "auto").strip().lower()
     limit = _to_int(form.get("limit", "50"), 50)
     max_scrolls = _to_int(form.get("max_scrolls", "60"), 60)
     scroll_pause = float(form.get("scroll_pause", "1.5") or 1.5)
@@ -71,6 +72,35 @@ def run_job(form: Dict[str, str], progress_cb=None) -> Dict[str, Any]:
     login = form.get("login") == "on"
     username = (form.get("x_username") or os.getenv("X_USERNAME") or "").strip()
     password = (form.get("x_password") or os.getenv("X_PASSWORD") or "").strip()
+    bearer_token = (os.getenv("X_BEARER_TOKEN") or "").strip()
+
+    target_user = (form.get("username") or "").strip().lstrip("@")
+    query = (form.get("query") or "").strip()
+
+    if mode == "user" and not target_user:
+        raise RuntimeError("username을 입력하세요.")
+    if mode == "search" and not query:
+        raise RuntimeError("query를 입력하세요.")
+
+    if engine in {"auto", "api"}:
+        if not bearer_token:
+            if engine == "api":
+                raise RuntimeError("API 모드에는 X_BEARER_TOKEN 환경변수가 필요합니다.")
+            if progress_cb:
+                progress_cb("X_BEARER_TOKEN 없음 -> Selenium 모드로 진행")
+        else:
+            try:
+                if progress_cb:
+                    progress_cb("엔진: API 우선")
+                api_crawler = XApiCrawler(bearer_token=bearer_token, progress_cb=progress_cb)
+                if mode == "user":
+                    return api_crawler.crawl_user(username=target_user, limit=limit)
+                return api_crawler.crawl_search(query=query, limit=limit)
+            except Exception as exc:
+                if engine == "api":
+                    raise
+                if progress_cb:
+                    progress_cb(f"API 실패 -> Selenium 폴백: {exc}")
 
     crawler_kwargs = {
         "headless": True,
@@ -121,20 +151,15 @@ def run_job(form: Dict[str, str], progress_cb=None) -> Dict[str, Any]:
         raise RuntimeError(f"Chrome 초기화 최종 실패: {last_exc}")
 
     try:
+        if progress_cb:
+            progress_cb("엔진: Selenium")
         if login:
             if not username or not password:
                 raise RuntimeError("로그인 옵션 사용 시 아이디/비밀번호가 필요합니다.")
             crawler.login(username=username, password=password, manual_wait_sec=30)
 
         if mode == "user":
-            target = (form.get("username") or "").strip().lstrip("@")
-            if not target:
-                raise RuntimeError("username을 입력하세요.")
-            return crawler.crawl_user(username=target, limit=limit, max_scrolls=max_scrolls)
-
-        query = (form.get("query") or "").strip()
-        if not query:
-            raise RuntimeError("query를 입력하세요.")
+            return crawler.crawl_user(username=target_user, limit=limit, max_scrolls=max_scrolls)
         return crawler.crawl_search(query=query, limit=limit, max_scrolls=max_scrolls)
     finally:
         if crawler is not None:
