@@ -541,6 +541,8 @@ class XSeleniumCrawler:
             return None
 
         text_parts = article.find_elements(By.CSS_SELECTOR, "div[data-testid='tweetText']")
+        if not text_parts:
+            text_parts = article.find_elements(By.XPATH, ".//div[@data-testid='tweetText']")
         text = "\n".join(t.text.strip() for t in text_parts if t.text.strip())
 
         handle = ""
